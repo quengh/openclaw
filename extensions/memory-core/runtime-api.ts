@@ -1,4 +1,9 @@
 export { getMemorySearchManager, MemoryIndexManager } from "./src/memory/index.js";
+export {
+  closeAllMemoryIndexManagers,
+  closeIdleMemoryIndexManagers,
+  closeMemoryIndexManagersForAgent,
+} from "./src/memory/manager-runtime.js";
 export { memoryRuntime } from "./src/runtime-provider.js";
 export {
   DEFAULT_LOCAL_MODEL,

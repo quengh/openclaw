@@ -48,6 +48,46 @@ import { startGatewayTailscaleExposure } from "./server-tailscale.js";
 
 const SESSION_LOCK_STALE_MS = 30 * 60 * 1000;
 
+// Idle-TTL eviction for cached MemoryIndexManager instances. Hardcoded for
+// the 2026.4.15 backport (will be exposed via config in the upstream main
+// PR). Threshold is intentionally conservative (15 min idle, 5 min scan)
+// to avoid churning the cache for active workspaces.
+const MEMORY_INDEX_IDLE_EVICT_DEFAULT_MS = 15 * 60 * 1000;
+const MEMORY_INDEX_IDLE_EVICT_SCAN_DEFAULT_MS = 5 * 60 * 1000;
+
+function scheduleMemoryIndexIdleEvictTimer(params: {
+  idleMs: number;
+  scanMs: number;
+  log: { warn: (msg: string) => void };
+}): NodeJS.Timeout {
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        const { closeIdleMemoryIndexManagers } =
+          await import("../plugin-sdk/memory-core-engine-runtime.js");
+        const result = await closeIdleMemoryIndexManagers({ idleMs: params.idleMs });
+        if (result.evicted > 0 || result.skippedBusy > 0 || result.skippedRevalidated > 0) {
+          params.log.warn(
+            `memory idle-evict: evicted=${result.evicted} remaining=${result.remaining}` +
+              (result.skippedBusy > 0 ? ` (deferred ${result.skippedBusy} busy)` : "") +
+              (result.skippedRevalidated > 0
+                ? ` (deferred ${result.skippedRevalidated} revalidated)`
+                : ""),
+          );
+        }
+      } catch (err) {
+        params.log.warn(`memory idle-evict tick failed: ${String(err)}`);
+      }
+    })();
+  }, params.scanMs);
+  // Unref so the timer never blocks process exit even if shutdown
+  // misses the explicit clearInterval (e.g. SIGKILL).
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+  return timer;
+}
+
 async function prewarmConfiguredPrimaryModel(params: {
   cfg: OpenClawConfig;
   log: { warn: (msg: string) => void };
@@ -227,6 +267,19 @@ export async function startGatewaySidecars(params: {
     params.log.warn(`qmd memory startup initialization failed: ${String(err)}`);
   });
 
+  // Schedule periodic idle-TTL eviction of MemoryIndexManager instances.
+  // This is the GC tick that closes long-idle managers (each owns a
+  // chokidar FSWatcher that accumulates fds) in long-running gateway
+  // daemons. Hardcoded thresholds for the 2026.4.15 backport.
+  const memoryIdleEvictTimer = scheduleMemoryIndexIdleEvictTimer({
+    idleMs: MEMORY_INDEX_IDLE_EVICT_DEFAULT_MS,
+    scanMs: MEMORY_INDEX_IDLE_EVICT_SCAN_DEFAULT_MS,
+    log: params.log,
+  });
+  params.log.warn(
+    `memory idle-evict sidecar scheduled (idleMs=${MEMORY_INDEX_IDLE_EVICT_DEFAULT_MS}, scanMs=${MEMORY_INDEX_IDLE_EVICT_SCAN_DEFAULT_MS})`,
+  );
+
   if (shouldWakeFromRestartSentinel()) {
     setTimeout(() => {
       void scheduleRestartSentinelWake({ deps: params.deps });
@@ -234,6 +287,12 @@ export async function startGatewaySidecars(params: {
   }
 
   scheduleSubagentOrphanRecovery();
+
+  // memoryIdleEvictTimer intentionally not returned: timer.unref() means it
+  // does not block process exit, and base 2026.4.15 has no sidecar handle
+  // contract for graceful shutdown. The upstream PR on main wires this
+  // through GatewayPostReadySidecarHandle.
+  void memoryIdleEvictTimer;
 
   return { pluginServices };
 }

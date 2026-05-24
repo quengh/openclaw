@@ -43,6 +43,24 @@ export const repairDreamingArtifacts: FacadeModule["repairDreamingArtifacts"] = 
   loadFacadeModule()["repairDreamingArtifacts"](
     ...args,
   )) as FacadeModule["repairDreamingArtifacts"];
+export const closeAllMemoryIndexManagers: FacadeModule["closeAllMemoryIndexManagers"] = ((
+  ...args
+) =>
+  loadFacadeModule()["closeAllMemoryIndexManagers"](
+    ...args,
+  )) as FacadeModule["closeAllMemoryIndexManagers"];
+export const closeIdleMemoryIndexManagers: FacadeModule["closeIdleMemoryIndexManagers"] = ((
+  ...args
+) =>
+  loadFacadeModule()["closeIdleMemoryIndexManagers"](
+    ...args,
+  )) as FacadeModule["closeIdleMemoryIndexManagers"];
+export const closeMemoryIndexManagersForAgent: FacadeModule["closeMemoryIndexManagersForAgent"] = ((
+  ...args
+) =>
+  loadFacadeModule()["closeMemoryIndexManagersForAgent"](
+    ...args,
+  )) as FacadeModule["closeMemoryIndexManagersForAgent"];
 export type BuiltinMemoryEmbeddingProviderDoctorMetadata =
   import("@openclaw/memory-core/runtime-api.js").BuiltinMemoryEmbeddingProviderDoctorMetadata;
 export type DreamingArtifactsAuditSummary =

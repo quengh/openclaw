@@ -47,6 +47,54 @@ import { STARTUP_UNAVAILABLE_GATEWAY_METHODS } from "./server-startup-unavailabl
 import { startGatewayTailscaleExposure } from "./server-tailscale.js";
 
 const SESSION_LOCK_STALE_MS = 30 * 60 * 1000;
+// Default idle-TTL for cached MemoryIndexManager entries in long-running
+// gateway daemons. 15 minutes is comfortably longer than the typical gap
+// between memory_search invocations during a single chat session, so an
+// active session does not have its cached embedding state thrown away,
+// while idle agents release their chokidar FSWatchers within one quiet
+// window.
+const MEMORY_INDEX_IDLE_EVICT_DEFAULT_MS = 900 * 1000;
+// How often the idle sweep runs. 5 minutes keeps the worst-case slack
+// between idleMs and actual eviction bounded to ~20min, while making the
+// sweep itself cheap (one Map walk + at most one close() per stale
+// entry).
+const MEMORY_INDEX_IDLE_EVICT_SCAN_DEFAULT_MS = 300 * 1000;
+
+// Periodic idle-TTL sweep over the process-wide MemoryIndexManager cache.
+// Long-running gateways accumulate cached managers (and their chokidar
+// FSWatchers) over time; this sweep closes managers that have not served
+// a request for `idleMs`. The timer is .unref()ed so it does not keep
+// the gateway process alive on its own.
+function scheduleMemoryIndexIdleEvictTimer(params: {
+  idleMs: number;
+  scanMs: number;
+  log: { warn: (msg: string) => void };
+}): ReturnType<typeof setInterval> {
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        const { closeIdleMemoryIndexManagers } =
+          await import("../../extensions/memory-core/manager-runtime.js");
+        const result = await closeIdleMemoryIndexManagers({ idleMs: params.idleMs });
+        if (result.evicted > 0 || result.skippedBusy > 0 || result.skippedRevalidated > 0) {
+          params.log.warn(
+            `memory idle-evict: evicted=${result.evicted} remaining=${result.remaining}` +
+              (result.skippedBusy > 0 ? ` (deferred ${result.skippedBusy} busy)` : "") +
+              (result.skippedRevalidated > 0
+                ? ` (deferred ${result.skippedRevalidated} revalidated)`
+                : ""),
+          );
+        }
+      } catch (err) {
+        params.log.warn(`memory idle-evict tick failed: ${String(err)}`);
+      }
+    })();
+  }, params.scanMs);
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+  return timer;
+}
 
 async function prewarmConfiguredPrimaryModel(params: {
   cfg: OpenClawConfig;
@@ -226,6 +274,15 @@ export async function startGatewaySidecars(params: {
   void startGatewayMemoryBackend({ cfg: params.cfg, log: params.log }).catch((err) => {
     params.log.warn(`qmd memory startup initialization failed: ${String(err)}`);
   });
+
+  scheduleMemoryIndexIdleEvictTimer({
+    idleMs: MEMORY_INDEX_IDLE_EVICT_DEFAULT_MS,
+    scanMs: MEMORY_INDEX_IDLE_EVICT_SCAN_DEFAULT_MS,
+    log: params.log,
+  });
+  params.log.warn(
+    `memory idle-evict sidecar scheduled (idleMs=${MEMORY_INDEX_IDLE_EVICT_DEFAULT_MS}, scanMs=${MEMORY_INDEX_IDLE_EVICT_SCAN_DEFAULT_MS})`,
+  );
 
   if (shouldWakeFromRestartSentinel()) {
     setTimeout(() => {

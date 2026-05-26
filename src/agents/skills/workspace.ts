@@ -18,7 +18,7 @@ import { resolveOpenClawMetadata, resolveSkillInvocationPolicy } from "./frontma
 import { loadSkillsFromDirSafe, readSkillFrontmatterSafe } from "./local-loader.js";
 import { resolvePluginSkillDirs } from "./plugin-skills.js";
 import { serializeByKey } from "./serialize.js";
-import { formatSkillsForPrompt, type Skill } from "./skill-contract.js";
+import { cachedFormatSkillsCompact, formatSkillsForPrompt, type Skill } from "./skill-contract.js";
 import type {
   ParsedSkillFrontmatter,
   SkillEligibilityContext,
@@ -615,9 +615,16 @@ function escapeXml(str: string): string {
  * Compact skill catalog: name + location only (no description).
  * Used as a fallback when the full format exceeds the char budget,
  * preserving awareness of all skills before resorting to dropping.
+ *
+ * Delegates to the shared formatter output cache in skill-contract.ts so
+ * that repeated invocations across sessions reuse the same string reference
+ * (see the cache block in that file for rationale).
  */
 export function formatSkillsCompact(skills: Skill[]): string {
-  if (skills.length === 0) return "";
+  return cachedFormatSkillsCompact(skills, renderSkillsCompact);
+}
+
+function renderSkillsCompact(skills: Skill[]): string {
   const lines = [
     "\n\nThe following skills provide specialized instructions for specific tasks.",
     "Use the read tool to load a skill's file when the task matches its name.",
